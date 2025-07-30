@@ -1,0 +1,172 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:table_calendar/table_calendar.dart';
+import '../providers/event_provider.dart';
+import '../widgets/event_card.dart';
+import 'package:device_calendar/device_calendar.dart' as dc;
+import '../services/calendar_service.dart';  
+import '../models/event.dart' as local_event; 
+import 'package:permission_handler/permission_handler.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final CalendarService _calendarService = CalendarService();
+  List<dc.Calendar> _calendars = [];
+  bool _permissionsGranted = false;
+
+
+  Future<void> _showPermissionDialog() async {
+  showDialog(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: const Text('Permissão necessária'),
+        content: const Text('O app precisa da permissão de calendário para funcionar corretamente. Por favor, conceda a permissão nas configurações.'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () {
+              openAppSettings(); // do permission_handler
+              Navigator.of(context).pop();
+            },
+            child: const Text('Abrir Configurações'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+
+  @override
+  void initState() {
+    super.initState();
+    _initCalendar();
+  }
+
+  Future<void> _initCalendar() async {
+    bool granted = await _calendarService.requestPermissions();
+    if (granted) {
+      final calendars = await _calendarService.retrieveCalendars();
+      setState(() {
+        _permissionsGranted = true;
+        _calendars = calendars;
+      });
+    } else {
+      setState(() {
+        _permissionsGranted = false;
+      });
+      _showPermissionDialog();
+    }
+  }
+
+  Future<void> _addEventToDeviceCalendar(local_event.Event event) async {
+  if (!_permissionsGranted || _calendars.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Permissões não concedidas ou nenhum calendário disponível')),
+    );
+    return;
+  }
+
+  final writableCalendars = _calendars.where((c) => c.isReadOnly == false).toList();
+
+  if (writableCalendars.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Nenhum calendário editável encontrado')),
+    );
+    return;
+  }
+
+  final calendar = await showDialog<dc.Calendar>(
+    context: context,
+    builder: (context) {
+      return SimpleDialog(
+        title: const Text('Escolha o calendário'),
+        children: writableCalendars.map((cal) {
+          return SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, cal),
+            child: Text(cal.name ?? 'Calendário sem nome'),
+          );
+        }).toList(),
+      );
+    },
+  );
+
+  if (calendar == null) return; // cancelado
+
+  final success = await _calendarService.addEventToCalendar(
+    calendar,
+    event.title,
+    event.description,
+    event.start,
+    event.end,
+  );
+
+  if (success) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Evento "${event.title}" adicionado ao calendário "${calendar.name}"')),
+    );
+  } else {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Falha ao adicionar evento "${event.title}"')),
+    );
+  }
+}
+
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = Provider.of<EventProvider>(context);
+    final selectedEvents = provider.getEventsForDay(provider.selectedDay);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('WSA2025 EVENTS'),
+      ),
+      body: Column(
+        children: [
+          TableCalendar(
+            focusedDay: provider.selectedDay,
+            selectedDayPredicate: (day) => isSameDay(day, provider.selectedDay),
+            onDaySelected: (selectedDay, focusedDay) {
+              provider.setSelectedDay(selectedDay);
+            },
+            firstDay: DateTime.utc(2025, 7, 28),
+            lastDay: DateTime.utc(2025, 8, 10),
+            eventLoader: (day) => provider.getEventsForDay(day),
+            calendarStyle: const CalendarStyle(
+              todayDecoration: BoxDecoration(color: Colors.blue, shape: BoxShape.circle),
+              selectedDecoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: selectedEvents.isEmpty
+                ? const Center(child: Text('Nenhum evento neste dia'))
+                : ListView.builder(
+                    itemCount: selectedEvents.length,
+                    itemBuilder: (context, index) {
+                      final event = selectedEvents[index];
+                      return EventCard(
+                        event: event,
+                        onAddToCalendar: () => _addEventToDeviceCalendar(event),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
